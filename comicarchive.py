@@ -675,7 +675,7 @@ class ComicArchive:
                 self.archive_type = self.ArchiveType.Pdf
                 self.archiver = PdfArchiver(self.path)
 
-        if ComicArchive.logo_data is None:
+        if ComicArchive.logo_data is None and self.default_image_path:
             #fname = ComicTaggerSettings.getGraphic('nocover.png')
             fname = self.default_image_path
             with open(fname, 'rb') as fd:
