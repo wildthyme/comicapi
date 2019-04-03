@@ -27,50 +27,55 @@ import locale
 import shutil
 
 from natsort import natsorted
-from unrar import rarfile
-from unrar import unrarlib
-import unrar.constants
+try:
+    from unrar import rarfile
+    from unrar import unrarlib
+    import unrar.constants
+    from unrar import constants
+    rarsupport = True
+except ImportError:
+    rarsupport = False
 import ctypes
 import io
-from unrar import constants
 
 
-class OpenableRarFile(rarfile.RarFile):
-    def open(self, member):
-        #print "opening %s..." % member
-        # based on https://github.com/matiasb/python-unrar/pull/4/files
-        if isinstance(member, rarfile.RarInfo):
-            member = member.filename
-        archive = unrarlib.RAROpenArchiveDataEx(
-            self.filename, mode=constants.RAR_OM_EXTRACT)
-        handle = self._open(archive)
-        found, buf = False, []
+if rarsupport:
+    class OpenableRarFile(rarfile.RarFile):
+        def open(self, member):
+            #print "opening %s..." % member
+            # based on https://github.com/matiasb/python-unrar/pull/4/files
+            if isinstance(member, rarfile.RarInfo):
+                member = member.filename
+            archive = unrarlib.RAROpenArchiveDataEx(
+                self.filename, mode=constants.RAR_OM_EXTRACT)
+            handle = self._open(archive)
+            found, buf = False, []
 
-        def _callback(msg, UserData, P1, P2):
-            if msg == constants.UCM_PROCESSDATA:
-                data = (ctypes.c_char * P2).from_address(P1).raw
-                buf.append(data)
-            return 1
+            def _callback(msg, UserData, P1, P2):
+                if msg == constants.UCM_PROCESSDATA:
+                    data = (ctypes.c_char * P2).from_address(P1).raw
+                    buf.append(data)
+                return 1
 
-        c_callback = unrarlib.UNRARCALLBACK(_callback)
-        unrarlib.RARSetCallback(handle, c_callback, 1)
-        try:
-            rarinfo = self._read_header(handle)
-            while rarinfo is not None:
-                #print "checking rar archive %s against %s" % (rarinfo.filename, member)
-                if rarinfo.filename == member:
-                    self._process_current(handle, constants.RAR_TEST)
-                    found = True
-                else:
-                    self._process_current(handle, constants.RAR_SKIP)
+            c_callback = unrarlib.UNRARCALLBACK(_callback)
+            unrarlib.RARSetCallback(handle, c_callback, 1)
+            try:
                 rarinfo = self._read_header(handle)
-        except unrarlib.UnrarException:
-            raise rarfile.BadRarFile("Bad RAR archive data.")
-        finally:
-            self._close(handle)
-        if not found:
-            raise KeyError('There is no item named %r in the archive' % member)
-        return b''.join(buf)
+                while rarinfo is not None:
+                    #print "checking rar archive %s against %s" % (rarinfo.filename, member)
+                    if rarinfo.filename == member:
+                        self._process_current(handle, constants.RAR_TEST)
+                        found = True
+                    else:
+                        self._process_current(handle, constants.RAR_SKIP)
+                    rarinfo = self._read_header(handle)
+            except unrarlib.UnrarException:
+                raise rarfile.BadRarFile("Bad RAR archive data.")
+            finally:
+                self._close(handle)
+            if not found:
+                raise KeyError('There is no item named %r in the archive' % member)
+            return b''.join(buf)
 
 
 # if platform.system() == "Windows":
@@ -293,223 +298,223 @@ class ZipArchiver:
 #------------------------------------------
 # RAR implementation
 
+if rarsupport:
+    class RarArchiver:
 
-class RarArchiver:
+        devnull = None
 
-    devnull = None
+        def __init__(self, path, rar_exe_path):
+            self.path = path
+            self.rar_exe_path = rar_exe_path
 
-    def __init__(self, path, rar_exe_path):
-        self.path = path
-        self.rar_exe_path = rar_exe_path
+            if RarArchiver.devnull is None:
+                RarArchiver.devnull = open(os.devnull, "w")
 
-        if RarArchiver.devnull is None:
-            RarArchiver.devnull = open(os.devnull, "w")
-
-        # windows only, keeps the cmd.exe from popping up
-        if platform.system() == "Windows":
-            #    self.startupinfo = subprocess.STARTUPINFO()
-            #    self.startupinfo.dwFlags |= _subprocess.STARTF_USESHOWWINDOW
-            self.startupinfo = None
-        else:
-            self.startupinfo = None
-
-    def __del__(self):
-        #RarArchiver.devnull.close()
-        pass
-
-    def getArchiveComment(self):
-
-        rarc = self.getRARObj()
-        return rarc.comment
-
-    def setArchiveComment(self, comment):
-
-        if self.rar_exe_path is not None:
-            try:
-                # write comment to temp file
-                tmp_fd, tmp_name = tempfile.mkstemp()
-                f = os.fdopen(tmp_fd, 'w+b')
-                f.write(comment)
-                f.close()
-
-                working_dir = os.path.dirname(os.path.abspath(self.path))
-
-                # use external program to write comment to Rar archive
-                subprocess.call(
-                    [
-                        self.rar_exe_path, 'c', '-w' + working_dir, '-c-',
-                        '-z' + tmp_name, self.path
-                    ],
-                    startupinfo=self.startupinfo,
-                    stdout=RarArchiver.devnull)
-
-                if platform.system() == "Darwin":
-                    time.sleep(1)
-
-                os.remove(tmp_name)
-            except:
-                return False
+            # windows only, keeps the cmd.exe from popping up
+            if platform.system() == "Windows":
+                #    self.startupinfo = subprocess.STARTUPINFO()
+                #    self.startupinfo.dwFlags |= _subprocess.STARTF_USESHOWWINDOW
+                self.startupinfo = None
             else:
-                return True
-        else:
-            return False
+                self.startupinfo = None
 
-    def readArchiveFile(self, archive_file):
+        def __del__(self):
+            #RarArchiver.devnull.close()
+            pass
 
-        # Make sure to escape brackets, since some funky stuff is going on
-        # underneath with "fnmatch"
-        #archive_file = archive_file.replace("[", '[[]')
-        entries = []
+        def getArchiveComment(self):
 
-        rarc = self.getRARObj()
+            rarc = self.getRARObj()
+            return rarc.comment
 
-        tries = 0
-        while tries < 7:
-            try:
-                tries = tries + 1
-                #tmp_folder = tempfile.mkdtemp()
-                #tmp_file = os.path.join(tmp_folder, archive_file)
-                #rarc.extract(archive_file, tmp_folder)
-                data = rarc.open(archive_file)
-                #data = open(tmp_file).read()
-                entries = [(rarc.getinfo(archive_file), data)]
+        def setArchiveComment(self, comment):
 
-                #shutil.rmtree(tmp_folder, ignore_errors=True)
+            if self.rar_exe_path is not None:
+                try:
+                    # write comment to temp file
+                    tmp_fd, tmp_name = tempfile.mkstemp()
+                    f = os.fdopen(tmp_fd, 'w+b')
+                    f.write(comment)
+                    f.close()
 
-                #entries = rarc.read_files( archive_file )
+                    working_dir = os.path.dirname(os.path.abspath(self.path))
 
-                if entries[0][0].file_size != len(entries[0][1]):
-                    errMsg = u"readArchiveFile(): [file is not expected size: {0} vs {1}]  {2}:{3} [attempt # {4}]".format(
-                        entries[0][0].file_size, len(entries[0][1]), self.path,
-                        archive_file, tries)
-                    sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
-                    continue
+                    # use external program to write comment to Rar archive
+                    subprocess.call(
+                        [
+                            self.rar_exe_path, 'c', '-w' + working_dir, '-c-',
+                            '-z' + tmp_name, self.path
+                        ],
+                        startupinfo=self.startupinfo,
+                        stdout=RarArchiver.devnull)
 
-            except (OSError, IOError) as e:
-                errMsg = u"readArchiveFile(): [{0}]  {1}:{2} attempt#{3}".format(
-                    str(e), self.path, archive_file, tries)
-                sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
-                time.sleep(1)
-            except Exception as e:
-                errMsg = u"Unexpected exception in readArchiveFile(): [{0}] for {1}:{2} attempt#{3}".format(
-                    str(e), self.path, archive_file, tries)
-                sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
-                break
+                    if platform.system() == "Darwin":
+                        time.sleep(1)
 
-            else:
-                #Success"
-                #entries is a list of of tuples:  ( rarinfo, filedata)
-                if tries > 1:
-                    errMsg = u"Attempted read_files() {0} times".format(tries)
-                    sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
-                if (len(entries) == 1):
-                    return entries[0][1]
+                    os.remove(tmp_name)
+                except:
+                    return False
                 else:
-                    raise IOError
-
-        raise IOError
-
-    def writeArchiveFile(self, archive_file, data):
-
-        if self.rar_exe_path is not None:
-            try:
-                tmp_folder = tempfile.mkdtemp()
-
-                tmp_file = os.path.join(tmp_folder, archive_file)
-
-                working_dir = os.path.dirname(os.path.abspath(self.path))
-
-                # TODO: will this break if 'archive_file' is in a subfolder. i.e. "foo/bar.txt"
-                # will need to create the subfolder above, I guess...
-                f = open(tmp_file, 'w')
-                f.write(data)
-                f.close()
-
-                # use external program to write file to Rar archive
-                subprocess.call(
-                    [
-                        self.rar_exe_path, 'a', '-w' + working_dir, '-c-',
-                        '-ep', self.path, tmp_file
-                    ],
-                    startupinfo=self.startupinfo,
-                    stdout=RarArchiver.devnull)
-
-                if platform.system() == "Darwin":
-                    time.sleep(1)
-                os.remove(tmp_file)
-                os.rmdir(tmp_folder)
-            except:
+                    return True
+            else:
                 return False
-            else:
-                return True
-        else:
-            return False
 
-    def removeArchiveFile(self, archive_file):
-        if self.rar_exe_path is not None:
-            try:
-                # use external program to remove file from Rar archive
-                subprocess.call(
-                    [self.rar_exe_path, 'd', '-c-', self.path, archive_file],
-                    startupinfo=self.startupinfo,
-                    stdout=RarArchiver.devnull)
+        def readArchiveFile(self, archive_file):
 
-                if platform.system() == "Darwin":
+            # Make sure to escape brackets, since some funky stuff is going on
+            # underneath with "fnmatch"
+            #archive_file = archive_file.replace("[", '[[]')
+            entries = []
+
+            rarc = self.getRARObj()
+
+            tries = 0
+            while tries < 7:
+                try:
+                    tries = tries + 1
+                    #tmp_folder = tempfile.mkdtemp()
+                    #tmp_file = os.path.join(tmp_folder, archive_file)
+                    #rarc.extract(archive_file, tmp_folder)
+                    data = rarc.open(archive_file)
+                    #data = open(tmp_file).read()
+                    entries = [(rarc.getinfo(archive_file), data)]
+
+                    #shutil.rmtree(tmp_folder, ignore_errors=True)
+
+                    #entries = rarc.read_files( archive_file )
+
+                    if entries[0][0].file_size != len(entries[0][1]):
+                        errMsg = u"readArchiveFile(): [file is not expected size: {0} vs {1}]  {2}:{3} [attempt # {4}]".format(
+                            entries[0][0].file_size, len(entries[0][1]), self.path,
+                            archive_file, tries)
+                        sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
+                        continue
+
+                except (OSError, IOError) as e:
+                    errMsg = u"readArchiveFile(): [{0}]  {1}:{2} attempt#{3}".format(
+                        str(e), self.path, archive_file, tries)
+                    sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
                     time.sleep(1)
-            except:
+                except Exception as e:
+                    errMsg = u"Unexpected exception in readArchiveFile(): [{0}] for {1}:{2} attempt#{3}".format(
+                        str(e), self.path, archive_file, tries)
+                    sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
+                    break
+
+                else:
+                    #Success"
+                    #entries is a list of of tuples:  ( rarinfo, filedata)
+                    if tries > 1:
+                        errMsg = u"Attempted read_files() {0} times".format(tries)
+                        sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
+                    if (len(entries) == 1):
+                        return entries[0][1]
+                    else:
+                        raise IOError
+
+            raise IOError
+
+        def writeArchiveFile(self, archive_file, data):
+
+            if self.rar_exe_path is not None:
+                try:
+                    tmp_folder = tempfile.mkdtemp()
+
+                    tmp_file = os.path.join(tmp_folder, archive_file)
+
+                    working_dir = os.path.dirname(os.path.abspath(self.path))
+
+                    # TODO: will this break if 'archive_file' is in a subfolder. i.e. "foo/bar.txt"
+                    # will need to create the subfolder above, I guess...
+                    f = open(tmp_file, 'w')
+                    f.write(data)
+                    f.close()
+
+                    # use external program to write file to Rar archive
+                    subprocess.call(
+                        [
+                            self.rar_exe_path, 'a', '-w' + working_dir, '-c-',
+                            '-ep', self.path, tmp_file
+                        ],
+                        startupinfo=self.startupinfo,
+                        stdout=RarArchiver.devnull)
+
+                    if platform.system() == "Darwin":
+                        time.sleep(1)
+                    os.remove(tmp_file)
+                    os.rmdir(tmp_folder)
+                except:
+                    return False
+                else:
+                    return True
+            else:
                 return False
+
+        def removeArchiveFile(self, archive_file):
+            if self.rar_exe_path is not None:
+                try:
+                    # use external program to remove file from Rar archive
+                    subprocess.call(
+                        [self.rar_exe_path, 'd', '-c-', self.path, archive_file],
+                        startupinfo=self.startupinfo,
+                        stdout=RarArchiver.devnull)
+
+                    if platform.system() == "Darwin":
+                        time.sleep(1)
+                except:
+                    return False
+                else:
+                    return True
             else:
-                return True
-        else:
-            return False
+                return False
 
-    def getArchiveFilenameList(self):
+        def getArchiveFilenameList(self):
 
-        rarc = self.getRARObj()
-        #namelist = [ item.filename for item in rarc.infolist() ]
-        #return namelist
+            rarc = self.getRARObj()
+            #namelist = [ item.filename for item in rarc.infolist() ]
+            #return namelist
 
-        tries = 0
-        while tries < 7:
-            try:
-                tries = tries + 1
-                #namelist = [ item.filename for item in rarc.infolist() ]
-                namelist = []
-                for item in rarc.infolist():
-                    if item.file_size != 0:
-                        namelist.append(item.filename)
+            tries = 0
+            while tries < 7:
+                try:
+                    tries = tries + 1
+                    #namelist = [ item.filename for item in rarc.infolist() ]
+                    namelist = []
+                    for item in rarc.infolist():
+                        if item.file_size != 0:
+                            namelist.append(item.filename)
 
-            except (OSError, IOError) as e:
-                errMsg = u"getArchiveFilenameList(): [{0}] {1} attempt#{2}".format(
-                    str(e), self.path, tries)
-                sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
-                time.sleep(1)
+                except (OSError, IOError) as e:
+                    errMsg = u"getArchiveFilenameList(): [{0}] {1} attempt#{2}".format(
+                        str(e), self.path, tries)
+                    sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
+                    time.sleep(1)
 
-            else:
-                #Success"
-                return namelist
+                else:
+                    #Success"
+                    return namelist
 
-        raise e
+            raise e
 
-    def getRARObj(self):
-        tries = 0
-        while tries < 7:
-            try:
-                tries = tries + 1
-                #rarc = UnRAR2.RarFile( self.path )
-                rarc = OpenableRarFile(self.path)
+        def getRARObj(self):
+            tries = 0
+            while tries < 7:
+                try:
+                    tries = tries + 1
+                    #rarc = UnRAR2.RarFile( self.path )
+                    rarc = OpenableRarFile(self.path)
 
-            except (OSError, IOError) as e:
-                errMsg = u"getRARObj(): [{0}] {1} attempt#{2}".format(
-                    str(e), self.path, tries)
-                sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
-                time.sleep(1)
+                except (OSError, IOError) as e:
+                    errMsg = u"getRARObj(): [{0}] {1} attempt#{2}".format(
+                        str(e), self.path, tries)
+                    sys.stderr.buffer.write(bytes(errMsg, "UTF-8"))
+                    time.sleep(1)
 
-            else:
-                #Success"
-                return rarc
+                else:
+                    #Success"
+                    return rarc
 
-        raise e
+            raise e
 
 
 #------------------------------------------
@@ -653,7 +658,7 @@ class ComicArchive:
         self.archive_type = self.ArchiveType.Unknown
         self.archiver = UnknownArchiver(self.path)
 
-        if ext == ".cbr" or ext == ".rar":
+        if rarsupport and ext == ".cbr" or ext == ".rar":
             if self.rarTest():
                 self.archive_type = self.ArchiveType.Rar
                 self.archiver = RarArchiver(
